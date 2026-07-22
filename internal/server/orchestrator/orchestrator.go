@@ -82,6 +82,7 @@ func NewChatCompletionOrchestrator(
 		PromptProvider:     promptService,
 		PromptProtecter:    promptProtectionRuleService,
 		Middlewares: []pipeline.Middleware{
+			cc.FixMissingToolCalls(),
 			cc.StripBillingHeaderCCH(),
 			stream.EnsureUsage(),
 		},
