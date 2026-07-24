@@ -430,7 +430,7 @@ func convertInputToMessages(input *Input) ([]llm.Message, error) {
 		i++
 	}
 
-return FixMissingToolCallOutputs(messages), nil
+	return FixMissingToolCallOutputs(messages), nil
 }
 
 // convertReasoningWithFollowing converts a reasoning item and merges it with subsequent
