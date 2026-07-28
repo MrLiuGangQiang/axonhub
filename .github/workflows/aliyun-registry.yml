@@ -43,6 +43,9 @@ jobs:
           else
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
+      - name: Write application version
+        shell: bash
+        run: echo "${{ steps.tag.outputs.tag }}" > internal/build/VERSION
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
