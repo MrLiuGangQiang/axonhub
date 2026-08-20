@@ -1676,7 +1676,7 @@ func TestApplyPassThroughBodyPreservesAlignedStreamWithoutPatchingIt(t *testing.
 func TestMergePassThroughBodySkipsFormatsWithoutTopLevelModel(t *testing.T) {
 	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 
-	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatGeminiContents, "gemini-2.5-pro")
+	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatGeminiContents, "gemini-2.5-pro", false)
 	require.NoError(t, err)
 	require.Equal(t, string(rawBody), string(merged))
 }
@@ -1684,10 +1684,36 @@ func TestMergePassThroughBodySkipsFormatsWithoutTopLevelModel(t *testing.T) {
 func TestMergePassThroughBodyPatchesModerationModel(t *testing.T) {
 	rawBody := []byte(`{"model":"omni-moderation-latest","input":"hello"}`)
 
-	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIModeration, "provider-moderation-v1")
+	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIModeration, "provider-moderation-v1", false)
 	require.NoError(t, err)
 	require.Equal(t, "provider-moderation-v1", gjson.GetBytes(merged, "model").String())
 	require.Equal(t, "hello", gjson.GetBytes(merged, "input").String())
+}
+
+func TestMergePassThroughBodyResponsesLiteInjectsAllTurns(t *testing.T) {
+	rawBody := []byte(`{"model":"gpt-5.4-mini","input":"hi","stream":true}`)
+
+	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIResponse, "gpt-5.4-mini", true)
+	require.NoError(t, err)
+	require.Equal(t, "all_turns", gjson.GetBytes(merged, "reasoning.context").String())
+	require.Equal(t, "hi", gjson.GetBytes(merged, "input").String())
+}
+
+func TestMergePassThroughBodyResponsesLitePreservesExplicitContext(t *testing.T) {
+	rawBody := []byte(`{"model":"gpt-5.4-mini","reasoning":{"context":"all_turns"},"input":"hi"}`)
+
+	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIResponse, "gpt-5.4-mini", true)
+	require.NoError(t, err)
+	require.Equal(t, "all_turns", gjson.GetBytes(merged, "reasoning.context").String())
+	require.Equal(t, "hi", gjson.GetBytes(merged, "input").String())
+}
+
+func TestMergePassThroughBodyResponsesLiteDoesNotInjectWithoutHeader(t *testing.T) {
+	rawBody := []byte(`{"model":"gpt-5.4-mini","input":"hi"}`)
+
+	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIResponse, "gpt-5.4-mini", false)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(merged, "reasoning.context").Exists())
 }
 
 // TestApplyUserAgentPassThrough tests the User-Agent pass-through middleware.
