@@ -173,8 +173,16 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 		// client. This must be set on the raw request before the underlying
 		// Responses outbound runs: it reads this header to emit an explicit
 		// parallel_tool_calls=false body, matching what real Codex sends.
-		if strings.TrimSpace(rawHeaders.Get(ResponsesLiteHeader)) == "" {
-			rawHeaders.Set(ResponsesLiteHeader, "true")
+		//
+		// Responses Lite rejects requests whose tools are not function/custom or
+		// client-executed web search, so skip the header (and drop an inbound one)
+		// when the body contains tools it cannot serve.
+		if responses.ResponsesLiteSupportsTools(llmReq.RawRequest.Body) {
+			if strings.TrimSpace(rawHeaders.Get(ResponsesLiteHeader)) == "" {
+				rawHeaders.Set(ResponsesLiteHeader, "true")
+			}
+		} else {
+			rawHeaders.Del(ResponsesLiteHeader)
 		}
 	}
 

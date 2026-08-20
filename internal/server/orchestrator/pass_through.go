@@ -17,6 +17,7 @@ import (
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer"
+	"github.com/looplj/axonhub/llm/transformer/openai/responses"
 )
 
 const codexResponsesLiteHeader = "X-Openai-Internal-Codex-Responses-Lite"
@@ -120,8 +121,9 @@ func applyPassThroughRequestBody(outbound *PersistentOutboundTransformer, system
 
 		responsesLite := llmReq.RawRequest != nil && llmReq.RawRequest.Headers != nil &&
 			strings.EqualFold(strings.TrimSpace(llmReq.RawRequest.Headers.Get(codexResponsesLiteHeader)), "true")
+		responsesLiteSupported := responses.ResponsesLiteSupportsTools(llmReq.RawRequest.Body)
 
-		body, err := mergePassThroughRequestBody(llmReq.RawRequest.Body, llmReq.APIFormat, llmReq.Model, responsesLite)
+		body, err := mergePassThroughRequestBody(llmReq.RawRequest.Body, llmReq.APIFormat, llmReq.Model, responsesLite && responsesLiteSupported)
 		if err != nil {
 			log.Warn(ctx, "failed to merge pass-through body, keeping outbound body",
 				log.String("channel", channel.Name),
@@ -168,6 +170,12 @@ func applyPassThroughRequestHeaders(outbound *PersistentOutboundTransformer) pip
 		for _, header := range codexResponsesPassThroughHeaders {
 			values := inboundHeaders.Values(header)
 			if len(values) == 0 {
+				continue
+			}
+
+			// Responses Lite rejects tool types it does not support; do not
+			// forward the Lite signal for bodies that contain such tools.
+			if header == codexResponsesLiteHeader && !responses.ResponsesLiteSupportsTools(outbound.state.LlmRequest.RawRequest.Body) {
 				continue
 			}
 
