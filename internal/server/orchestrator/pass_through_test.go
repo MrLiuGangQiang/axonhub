@@ -1506,6 +1506,32 @@ func TestApplyPassThroughRequestHeadersSkipsResponsesLiteForUnsupportedTools(t *
 	require.Equal(t, "thread-123", processed.Headers.Get("Thread-Id"))
 }
 
+func TestApplyPassThroughRequestHeadersSkipsResponsesLiteForUnsupportedModel(t *testing.T) {
+	inboundHeaders := http.Header{
+		"X-OpenAI-Internal-Codex-Responses-Lite": {"true"},
+		"Thread-Id":                              {"thread-123"},
+	}
+	outbound := &PersistentOutboundTransformer{
+		state: &PersistenceState{
+			PassThroughApplied: true,
+			LlmRequest: &llm.Request{
+				APIFormat: llm.APIFormatOpenAIResponse,
+				Model:     "gpt-5.3-codex-spark",
+				RawRequest: &httpclient.Request{
+					Headers: inboundHeaders,
+					Body:    []byte(`{"model":"gpt-5.3-codex-spark","input":"hi"}`),
+				},
+			},
+		},
+	}
+	request := &httpclient.Request{Headers: make(http.Header)}
+
+	processed, err := applyPassThroughRequestHeaders(outbound).OnOutboundRawRequest(context.Background(), request)
+	require.NoError(t, err)
+	require.Empty(t, processed.Headers.Get(responsestransformer.ResponsesLiteHeader))
+	require.Equal(t, "thread-123", processed.Headers.Get("Thread-Id"))
+}
+
 func TestApplyPassThroughRequestHeadersRequiresResponsesBodyPassThrough(t *testing.T) {
 	tests := []struct {
 		name               string

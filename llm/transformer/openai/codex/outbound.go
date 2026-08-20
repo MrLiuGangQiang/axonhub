@@ -177,7 +177,7 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 		// Responses Lite rejects requests whose tools are not function/custom or
 		// client-executed web search, so skip the header (and drop an inbound one)
 		// when the body contains tools it cannot serve.
-		if responses.ResponsesLiteSupportsTools(llmReq.RawRequest.Body) {
+		if responses.ResponsesLiteAllTurnsSupported(llmReq.Model) && responses.ResponsesLiteSupportsTools(llmReq.RawRequest.Body) {
 			if strings.TrimSpace(rawHeaders.Get(ResponsesLiteHeader)) == "" {
 				rawHeaders.Set(ResponsesLiteHeader, "true")
 			}
@@ -239,14 +239,16 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 		// whose reasoning context is not "all_turns"; clients that never sent a
 		// reasoning block would otherwise fail upstream with HTTP 400. Only fill
 		// in a missing context — never override what the client explicitly sent.
-		if providerExt := reqCopy.ProviderExtensions; providerExt == nil || providerExt.OpenAIResponses == nil ||
-			providerExt.OpenAIResponses.Request == nil || providerExt.OpenAIResponses.Request.ReasoningContext == "" {
-			oaiExt := llm.EnsureOpenAIResponsesProviderExtensions(&reqCopy)
-			if oaiExt != nil {
-				if oaiExt.Request == nil {
-					oaiExt.Request = &llm.OpenAIResponsesRequestExtensions{ReasoningContext: "all_turns"}
-				} else {
-					oaiExt.Request.ReasoningContext = "all_turns"
+		if responses.ResponsesLiteAllTurnsSupported(reqCopy.Model) {
+			if providerExt := reqCopy.ProviderExtensions; providerExt == nil || providerExt.OpenAIResponses == nil ||
+				providerExt.OpenAIResponses.Request == nil || providerExt.OpenAIResponses.Request.ReasoningContext == "" {
+				oaiExt := llm.EnsureOpenAIResponsesProviderExtensions(&reqCopy)
+				if oaiExt != nil {
+					if oaiExt.Request == nil {
+						oaiExt.Request = &llm.OpenAIResponsesRequestExtensions{ReasoningContext: "all_turns"}
+					} else {
+						oaiExt.Request.ReasoningContext = "all_turns"
+					}
 				}
 			}
 		}

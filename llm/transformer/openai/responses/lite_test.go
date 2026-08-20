@@ -2,6 +2,27 @@
 
 import "testing"
 
+func TestResponsesLiteAllTurnsSupported(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{model: "gpt-5", want: true},
+		{model: "gpt-5.4-mini", want: true},
+		{model: "gpt-5.6-sol", want: true},
+		{model: "gpt-5.3-codex-spark", want: false},
+		{model: "GPT-5.3-CODEX-SPARK", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := ResponsesLiteAllTurnsSupported(tt.model); got != tt.want {
+				t.Fatalf("ResponsesLiteAllTurnsSupported(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResponsesLiteSupportsTools(t *testing.T) {
 	tests := []struct {
 		name string

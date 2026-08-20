@@ -762,6 +762,34 @@ func TestCodexOutbound_FillsMissingReasoningContextForResponsesLite(t *testing.T
 		assert.Equal(t, "xhigh", reasoning["effort"])
 	})
 
+	t.Run("spark model does not get all_turns reasoning context", func(t *testing.T) {
+		headers := make(http.Header)
+		headers.Set("Content-Type", "application/json")
+		inboundRequest := &httpclient.Request{
+			Headers: headers,
+			Body: []byte(`{
+				"model": "gpt-5.3-codex-spark",
+				"input": "Hello",
+				"stream": true
+			}`),
+		}
+
+		llmRequest, err := responses.NewInboundTransformer().TransformRequest(ctx, inboundRequest)
+		require.NoError(t, err)
+		llmRequest.RawRequest = inboundRequest
+
+		outboundRequest, err := outbound.TransformRequest(ctx, llmRequest)
+		require.NoError(t, err)
+
+		assert.Empty(t, outboundRequest.Headers.Get(responses.ResponsesLiteHeader))
+
+		body := decodeCodexRequestBody(t, outboundRequest)
+		reasoning, ok := body["reasoning"].(map[string]any)
+		if ok {
+			assert.Empty(t, reasoning["context"])
+		}
+	})
+
 	t.Run("image requests do not get a fabricated reasoning context", func(t *testing.T) {
 		req, err := outbound.TransformRequest(ctx, &llm.Request{
 			Model:       "gpt-image-2",

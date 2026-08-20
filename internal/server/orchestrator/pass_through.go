@@ -121,7 +121,7 @@ func applyPassThroughRequestBody(outbound *PersistentOutboundTransformer, system
 
 		responsesLite := llmReq.RawRequest != nil && llmReq.RawRequest.Headers != nil &&
 			strings.EqualFold(strings.TrimSpace(llmReq.RawRequest.Headers.Get(codexResponsesLiteHeader)), "true")
-		responsesLiteSupported := responses.ResponsesLiteSupportsTools(llmReq.RawRequest.Body)
+		responsesLiteSupported := responses.ResponsesLiteSupportsTools(llmReq.RawRequest.Body) && responses.ResponsesLiteAllTurnsSupported(llmReq.Model)
 
 		body, err := mergePassThroughRequestBody(llmReq.RawRequest.Body, llmReq.APIFormat, llmReq.Model, responsesLite && responsesLiteSupported)
 		if err != nil {
@@ -175,7 +175,7 @@ func applyPassThroughRequestHeaders(outbound *PersistentOutboundTransformer) pip
 
 			// Responses Lite rejects tool types it does not support; do not
 			// forward the Lite signal for bodies that contain such tools.
-			if header == codexResponsesLiteHeader && !responses.ResponsesLiteSupportsTools(outbound.state.LlmRequest.RawRequest.Body) {
+			if header == codexResponsesLiteHeader && (!responses.ResponsesLiteAllTurnsSupported(outbound.state.LlmRequest.Model) || !responses.ResponsesLiteSupportsTools(outbound.state.LlmRequest.RawRequest.Body)) {
 				continue
 			}
 

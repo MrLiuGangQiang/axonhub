@@ -6,6 +6,18 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// ResponsesLiteAllTurnsSupported reports whether a model accepts the all_turns
+// reasoning context that Responses Lite requires. Some Codex models only support
+// "auto" and "current_turn", so sending all_turns to them causes an upstream 400.
+func ResponsesLiteAllTurnsSupported(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-5.3-codex-spark":
+		return false
+	default:
+		return true
+	}
+}
+
 // ResponsesLiteSupportsTools reports whether a raw Responses request body's tools
 // are compatible with Responses Lite. Responses Lite only accepts function tools,
 // custom tools, and client-executed web search; other tool types (image_generation,
