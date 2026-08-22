@@ -1446,7 +1446,7 @@ func TestApplyPassThroughRequestHeaders(t *testing.T) {
 		"X-Codex-Beta-Features":                  {"js_repl"},
 		"Session-Id":                             {"session-123"},
 		"Originator":                             {"codex_desktop_rs"},
-		"X-OpenAI-Internal-Codex-Responses-Lite": {"true"},
+		"X-Openai-Internal-Codex-Responses-Lite": {"true"},
 		"Thread-Id":                              {"thread-123"},
 		"Authorization":                          {"Bearer inbound-secret"},
 		"Cookie":                                 {"session=inbound-secret"},
@@ -1475,61 +1475,11 @@ func TestApplyPassThroughRequestHeaders(t *testing.T) {
 		require.Equal(t, inboundHeaders.Values(header), processed.Headers.Values(header), header)
 	}
 	require.Equal(t, "Bearer provider-secret", processed.Headers.Get("Authorization"))
+	require.Empty(t, processed.Headers.Get("X-Openai-Internal-Codex-Responses-Lite"))
 	require.Empty(t, processed.Headers.Get("Cookie"))
 	require.Empty(t, processed.Headers.Get("Host"))
 	require.Empty(t, processed.Headers.Get("Content-Length"))
 	require.Empty(t, processed.Headers.Get("X-Untrusted-Custom-Header"))
-}
-
-func TestApplyPassThroughRequestHeadersSkipsResponsesLiteForUnsupportedTools(t *testing.T) {
-	inboundHeaders := http.Header{
-		"X-OpenAI-Internal-Codex-Responses-Lite": {"true"},
-		"Thread-Id":                              {"thread-123"},
-	}
-	outbound := &PersistentOutboundTransformer{
-		state: &PersistenceState{
-			PassThroughApplied: true,
-			LlmRequest: &llm.Request{
-				APIFormat: llm.APIFormatOpenAIResponse,
-				RawRequest: &httpclient.Request{
-					Headers: inboundHeaders,
-					Body:    []byte(`{"model":"gpt-5.4-mini","tools":[{"type":"image_generation"}]}`),
-				},
-			},
-		},
-	}
-	request := &httpclient.Request{Headers: make(http.Header)}
-
-	processed, err := applyPassThroughRequestHeaders(outbound).OnOutboundRawRequest(context.Background(), request)
-	require.NoError(t, err)
-	require.Empty(t, processed.Headers.Get(responsestransformer.ResponsesLiteHeader))
-	require.Equal(t, "thread-123", processed.Headers.Get("Thread-Id"))
-}
-
-func TestApplyPassThroughRequestHeadersSkipsResponsesLiteForUnsupportedModel(t *testing.T) {
-	inboundHeaders := http.Header{
-		"X-OpenAI-Internal-Codex-Responses-Lite": {"true"},
-		"Thread-Id":                              {"thread-123"},
-	}
-	outbound := &PersistentOutboundTransformer{
-		state: &PersistenceState{
-			PassThroughApplied: true,
-			LlmRequest: &llm.Request{
-				APIFormat: llm.APIFormatOpenAIResponse,
-				Model:     "gpt-5.3-codex-spark",
-				RawRequest: &httpclient.Request{
-					Headers: inboundHeaders,
-					Body:    []byte(`{"model":"gpt-5.3-codex-spark","input":"hi"}`),
-				},
-			},
-		},
-	}
-	request := &httpclient.Request{Headers: make(http.Header)}
-
-	processed, err := applyPassThroughRequestHeaders(outbound).OnOutboundRawRequest(context.Background(), request)
-	require.NoError(t, err)
-	require.Empty(t, processed.Headers.Get(responsestransformer.ResponsesLiteHeader))
-	require.Equal(t, "thread-123", processed.Headers.Get("Thread-Id"))
 }
 
 func TestApplyPassThroughRequestHeadersRequiresResponsesBodyPassThrough(t *testing.T) {
@@ -1727,7 +1677,7 @@ func TestApplyPassThroughBodyPreservesAlignedStreamWithoutPatchingIt(t *testing.
 func TestMergePassThroughBodySkipsFormatsWithoutTopLevelModel(t *testing.T) {
 	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 
-	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatGeminiContents, "gemini-2.5-pro", false)
+	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatGeminiContents, "gemini-2.5-pro")
 	require.NoError(t, err)
 	require.Equal(t, string(rawBody), string(merged))
 }
@@ -1735,36 +1685,10 @@ func TestMergePassThroughBodySkipsFormatsWithoutTopLevelModel(t *testing.T) {
 func TestMergePassThroughBodyPatchesModerationModel(t *testing.T) {
 	rawBody := []byte(`{"model":"omni-moderation-latest","input":"hello"}`)
 
-	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIModeration, "provider-moderation-v1", false)
+	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIModeration, "provider-moderation-v1")
 	require.NoError(t, err)
 	require.Equal(t, "provider-moderation-v1", gjson.GetBytes(merged, "model").String())
 	require.Equal(t, "hello", gjson.GetBytes(merged, "input").String())
-}
-
-func TestMergePassThroughBodyResponsesLiteInjectsAllTurns(t *testing.T) {
-	rawBody := []byte(`{"model":"gpt-5.4-mini","input":"hi","stream":true}`)
-
-	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIResponse, "gpt-5.4-mini", true)
-	require.NoError(t, err)
-	require.Equal(t, "all_turns", gjson.GetBytes(merged, "reasoning.context").String())
-	require.Equal(t, "hi", gjson.GetBytes(merged, "input").String())
-}
-
-func TestMergePassThroughBodyResponsesLitePreservesExplicitContext(t *testing.T) {
-	rawBody := []byte(`{"model":"gpt-5.4-mini","reasoning":{"context":"all_turns"},"input":"hi"}`)
-
-	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIResponse, "gpt-5.4-mini", true)
-	require.NoError(t, err)
-	require.Equal(t, "all_turns", gjson.GetBytes(merged, "reasoning.context").String())
-	require.Equal(t, "hi", gjson.GetBytes(merged, "input").String())
-}
-
-func TestMergePassThroughBodyResponsesLiteDoesNotInjectWithoutHeader(t *testing.T) {
-	rawBody := []byte(`{"model":"gpt-5.4-mini","input":"hi"}`)
-
-	merged, err := mergePassThroughRequestBody(rawBody, llm.APIFormatOpenAIResponse, "gpt-5.4-mini", false)
-	require.NoError(t, err)
-	require.False(t, gjson.GetBytes(merged, "reasoning.context").Exists())
 }
 
 // TestApplyUserAgentPassThrough tests the User-Agent pass-through middleware.

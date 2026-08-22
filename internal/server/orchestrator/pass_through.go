@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
 	"github.com/looplj/axonhub/internal/log"
@@ -17,14 +15,11 @@ import (
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer"
-	"github.com/looplj/axonhub/llm/transformer/openai/responses"
 )
 
-const codexResponsesLiteHeader = "X-Openai-Internal-Codex-Responses-Lite"
-
-// codexResponsesPassThroughHeaders contains client metadata that Codex-compatible
-// Responses upstreams use to select protocol behavior. Keep this as an explicit
-// allowlist: inbound credentials and transport headers must never be copied.
+// codexResponsesPassThroughHeaders contains Codex identity metadata that can
+// accompany a pass-through body. Keep this as an explicit allowlist: inbound
+// credentials, transport headers, and protocol-selection headers are never copied.
 var codexResponsesPassThroughHeaders = []string{
 	"X-Codex-Turn-Metadata",
 	"X-Codex-Window-Id",
@@ -32,7 +27,6 @@ var codexResponsesPassThroughHeaders = []string{
 	"X-Codex-Beta-Features",
 	"Session-Id",
 	"Originator",
-	codexResponsesLiteHeader,
 	"Thread-Id",
 }
 
@@ -119,11 +113,7 @@ func applyPassThroughRequestBody(outbound *PersistentOutboundTransformer, system
 			log.String("api_format", request.APIFormat),
 		)
 
-		responsesLite := llmReq.RawRequest != nil && llmReq.RawRequest.Headers != nil &&
-			strings.EqualFold(strings.TrimSpace(llmReq.RawRequest.Headers.Get(codexResponsesLiteHeader)), "true")
-		responsesLiteSupported := responses.ResponsesLiteSupportsTools(llmReq.RawRequest.Body) && responses.ResponsesLiteAllTurnsSupported(llmReq.Model)
-
-		body, err := mergePassThroughRequestBody(llmReq.RawRequest.Body, llmReq.APIFormat, llmReq.Model, responsesLite && responsesLiteSupported)
+		body, err := mergePassThroughRequestBody(llmReq.RawRequest.Body, llmReq.APIFormat, llmReq.Model)
 		if err != nil {
 			log.Warn(ctx, "failed to merge pass-through body, keeping outbound body",
 				log.String("channel", channel.Name),
@@ -150,10 +140,9 @@ func (p *PersistentOutboundTransformer) allowPassThroughBody(ctx context.Context
 	return policy.AllowPassThroughBody(ctx, llmReq, providerReq)
 }
 
-// applyPassThroughRequestHeaders forwards the Codex Responses metadata paired with
-// a pass-through body. These headers are part of the client's protocol negotiation;
-// dropping them while replaying the original body can change how a compatible
-// upstream interprets the same request.
+// applyPassThroughRequestHeaders forwards Codex identity metadata paired with
+// a pass-through body. Protocol-selection headers such as Responses Lite are
+// deliberately excluded: the Codex transformer decides whether they apply.
 func applyPassThroughRequestHeaders(outbound *PersistentOutboundTransformer) pipeline.Middleware {
 	return pipeline.OnRawRequest("pass-through-request-headers", func(_ context.Context, request *httpclient.Request) (*httpclient.Request, error) {
 		if !outbound.state.PassThroughApplied || outbound.state.LlmRequest == nil ||
@@ -173,12 +162,6 @@ func applyPassThroughRequestHeaders(outbound *PersistentOutboundTransformer) pip
 				continue
 			}
 
-			// Responses Lite rejects tool types it does not support; do not
-			// forward the Lite signal for bodies that contain such tools.
-			if header == codexResponsesLiteHeader && (!responses.ResponsesLiteAllTurnsSupported(outbound.state.LlmRequest.Model) || !responses.ResponsesLiteSupportsTools(outbound.state.LlmRequest.RawRequest.Body)) {
-				continue
-			}
-
 			request.Headers.Del(header)
 			for _, value := range values {
 				request.Headers.Add(header, value)
@@ -189,16 +172,8 @@ func applyPassThroughRequestHeaders(outbound *PersistentOutboundTransformer) pip
 	})
 }
 
-func mergePassThroughRequestBody(rawBody []byte, apiFormat llm.APIFormat, model string, responsesLite bool) ([]byte, error) {
+func mergePassThroughRequestBody(rawBody []byte, apiFormat llm.APIFormat, model string) ([]byte, error) {
 	body := append([]byte(nil), rawBody...)
-
-	if responsesLite {
-		var err error
-		body, err = ensureResponsesLiteReasoningContext(body)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	if !passThroughBodyNeedsModelPatch(apiFormat) {
 		return body, nil
@@ -211,27 +186,6 @@ func mergePassThroughRequestBody(rawBody []byte, apiFormat llm.APIFormat, model 
 	nextBody, err := sjson.SetBytes(body, "model", model)
 	if err != nil {
 		return nil, fmt.Errorf("set model in pass-through body: %w", err)
-	}
-
-	return nextBody, nil
-}
-
-// ensureResponsesLiteReasoningContext fills in the reasoning.context value that
-// Responses Lite upstreams require. Pass-through replays the original inbound
-// body, so the codex transformer's fabricated all_turns value would otherwise be
-// discarded and the upstream rejects the request with HTTP 400.
-func ensureResponsesLiteReasoningContext(body []byte) ([]byte, error) {
-	if len(body) == 0 {
-		return body, nil
-	}
-
-	if value := strings.TrimSpace(gjson.GetBytes(body, "reasoning.context").String()); value != "" {
-		return body, nil
-	}
-
-	nextBody, err := sjson.SetBytes(body, "reasoning.context", "all_turns")
-	if err != nil {
-		return nil, fmt.Errorf("set reasoning.context for Responses Lite pass-through: %w", err)
 	}
 
 	return nextBody, nil
