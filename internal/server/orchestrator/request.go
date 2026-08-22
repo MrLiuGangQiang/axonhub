@@ -14,6 +14,7 @@ import (
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/pipeline"
+	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
 type persistRequestMiddleware struct {
@@ -42,7 +43,7 @@ func (m *persistRequestMiddleware) OnInboundLlmRequest(ctx context.Context, llmR
 		ctx,
 		llmRequest,
 		m.inbound.state.RawRequest,
-		llmRequest.APIFormat,
+		persistedRequestAPIFormat(ctx, llmRequest.APIFormat),
 	)
 	if err != nil {
 		return nil, err
@@ -51,6 +52,16 @@ func (m *persistRequestMiddleware) OnInboundLlmRequest(ctx context.Context, llmR
 	m.inbound.state.Request = request
 
 	return llmRequest, nil
+}
+
+// persistedRequestAPIFormat distinguishes the downstream WebSocket protocol in
+// request metadata without changing the Responses API format used by endpoint
+// selection and transformers.
+func persistedRequestAPIFormat(ctx context.Context, format llm.APIFormat) llm.APIFormat {
+	if shared.IsResponsesWebSocket(ctx) && format == llm.APIFormatOpenAIResponse {
+		return llm.APIFormatOpenAIResponseWebSocket
+	}
+	return format
 }
 
 func (m *persistRequestMiddleware) OnOutboundLlmResponse(ctx context.Context, llmResp *llm.Response) (*llm.Response, error) {
