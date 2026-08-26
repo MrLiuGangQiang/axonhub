@@ -1437,4 +1437,37 @@ func TestOutboundTransformer_TransformStream_UsageWithoutContentStillIncomplete(
 	}
 }
 
+func TestResponsesStream_QwenReasoningTextThenMessage(t *testing.T) {
+	outbound, err := NewOutboundTransformer("https://api.openai.com", "test-api-key")
+	require.NoError(t, err)
+	inbound := NewInboundTransformer()
 
+	events := []*httpclient.StreamEvent{
+		{Type: "response.created", Data: []byte(`{"type":"response.created","response":{"id":"resp_qwen","created_at":1787721246,"model":"qwen3.7-max","status":"queued","output":[]}}`)},
+		{Type: "response.in_progress", Data: []byte(`{"type":"response.in_progress","response":{"id":"resp_qwen","created_at":1787721246,"model":"qwen3.7-max","status":"in_progress","output":[]}}`)},
+		{Type: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning","type":"reasoning","summary":[],"content":null,"encrypted_content":null,"status":null}}`)},
+		{Type: "response.reasoning_text.delta", Data: []byte(`{"type":"response.reasoning_text.delta","content_index":0,"delta":"think","item_id":"reasoning","output_index":0}`)},
+		{Type: "response.reasoning_text.done", Data: []byte(`{"type":"response.reasoning_text.done","content_index":0,"item_id":"reasoning","output_index":0,"text":"think"}`)},
+		{Type: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","output_index":0,"item":{"id":"reasoning","summary":[{"text":"think","type":"summary_text"}],"type":"reasoning","content":null,"encrypted_content":null,"status":null}}`)},
+		{Type: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","output_index":1,"item":{"id":"message","content":[],"role":"assistant","status":"in_progress","type":"message"}}`)},
+		{Type: "response.content_part.added", Data: []byte(`{"type":"response.content_part.added","content_index":0,"item_id":"message","output_index":1,"part":{"annotations":[],"text":"","type":"output_text","logprobs":null}}`)},
+		{Type: "response.output_text.delta", Data: []byte(`{"type":"response.output_text.delta","content_index":0,"delta":"answer","item_id":"message","output_index":1}`)},
+		{Type: "response.output_text.done", Data: []byte(`{"type":"response.output_text.done","content_index":0,"item_id":"message","output_index":1,"text":"answer"}`)},
+		{Type: "response.content_part.done", Data: []byte(`{"type":"response.content_part.done","content_index":0,"item_id":"message","output_index":1,"part":{"annotations":[],"text":"answer","type":"output_text","logprobs":null}}`)},
+		{Type: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","output_index":1,"item":{"id":"message","content":[{"annotations":[],"text":"answer","type":"output_text","logprobs":null}],"role":"assistant","status":"completed","type":"message"}}`)},
+		{Type: "response.completed", Data: []byte(`{"type":"response.completed","response":{"id":"resp_qwen","created_at":1787721246,"model":"qwen3.7-max","status":"completed","output":[]}}`)},
+	}
+
+	llmStream, err := outbound.TransformStream(t.Context(), nil, streams.SliceStream(events))
+	require.NoError(t, err)
+	clientStream, err := inbound.TransformStream(t.Context(), llmStream)
+	require.NoError(t, err)
+
+	var eventTypes []string
+	for clientStream.Next() {
+		eventTypes = append(eventTypes, clientStream.Current().Type)
+	}
+	require.NoError(t, clientStream.Err())
+	require.Contains(t, eventTypes, "response.output_text.delta")
+	require.Contains(t, eventTypes, "response.completed")
+}

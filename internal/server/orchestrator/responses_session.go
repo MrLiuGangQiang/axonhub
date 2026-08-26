@@ -281,6 +281,7 @@ type responsesSessionStream struct {
 	store       *responsesSessionStore
 	requestBody []byte
 	inner       streams.Stream[*httpclient.StreamEvent]
+	current     *httpclient.StreamEvent
 	chunks      []*httpclient.StreamEvent
 	chunksBytes int
 	terminal    bool
@@ -290,10 +291,13 @@ type responsesSessionStream struct {
 
 func (s *responsesSessionStream) Next() bool {
 	if !s.inner.Next() {
+		s.current = nil
+
 		return false
 	}
 
-	event := s.inner.Current()
+	s.current = s.inner.Current()
+	event := s.current
 	if event != nil {
 		if !s.overflow {
 			s.chunksBytes += len(event.Type) + len(event.LastEventID) + len(event.Data)
@@ -318,7 +322,7 @@ func (s *responsesSessionStream) Next() bool {
 	return true
 }
 
-func (s *responsesSessionStream) Current() *httpclient.StreamEvent { return s.inner.Current() }
+func (s *responsesSessionStream) Current() *httpclient.StreamEvent { return s.current }
 
 func (s *responsesSessionStream) Err() error { return s.inner.Err() }
 

@@ -275,6 +275,48 @@ func TestResponsesSessionStreamStopsBufferingOversizedResponse(t *testing.T) {
 	require.True(t, wrapped.(*responsesSessionStream).overflow)
 }
 
+func TestResponsesSessionStreamCachesCurrentEvent(t *testing.T) {
+	first := &httpclient.StreamEvent{Type: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","sequence_number":28}`)}
+	second := &httpclient.StreamEvent{Type: "response.content_part.added", Data: []byte(`{"type":"response.content_part.added","sequence_number":29}`)}
+	inner := &consumingCurrentStream{events: []*httpclient.StreamEvent{first, second}}
+
+	wrapped := newResponsesSessionStore().wrapStream(context.Background(), []byte(`{"model":"gpt-5"}`), inner)
+
+	require.True(t, wrapped.Next())
+	require.Equal(t, first, wrapped.Current())
+	// The session wrapper reads Current() in Next() to record response chunks;
+	// downstream callers must still receive that same event rather than the next
+	// queued Responses event.
+	require.Equal(t, first, wrapped.Current())
+
+	require.True(t, wrapped.Next())
+	require.Equal(t, second, wrapped.Current())
+	require.False(t, wrapped.Next())
+}
+
+type consumingCurrentStream struct {
+	events []*httpclient.StreamEvent
+	index  int
+}
+
+func (s *consumingCurrentStream) Next() bool {
+	return s.index < len(s.events)
+}
+
+func (s *consumingCurrentStream) Current() *httpclient.StreamEvent {
+	if s.index >= len(s.events) {
+		return nil
+	}
+
+	event := s.events[s.index]
+	s.index++
+
+	return event
+}
+
+func (s *consumingCurrentStream) Err() error   { return nil }
+func (s *consumingCurrentStream) Close() error { return nil }
+
 func TestResponsesSessionStoreEvictsExpiredRecords(t *testing.T) {
 	store := newResponsesSessionStore()
 	now := time.Now()
