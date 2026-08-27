@@ -603,9 +603,14 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 
 		return ch, nil
 	case channel.TypeZai, channel.TypeZhipu:
+		var reasoningEffortMapping []llm.ReasoningEffortMapping
+		if c.Settings != nil {
+			reasoningEffortMapping = c.Settings.TransformOptions.ReasoningEffortMapping
+		}
 		transformer, err := zai.NewOutboundTransformerWithConfig(&zai.Config{
-			BaseURL:        c.BaseURL,
-			APIKeyProvider: getAPIKeyProvider(ch),
+			BaseURL:                c.BaseURL,
+			APIKeyProvider:         getAPIKeyProvider(ch),
+			ReasoningEffortMapping: reasoningEffortMapping,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
@@ -615,10 +620,15 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 
 		return ch, nil
 	case channel.TypeXiaomi:
+		var reasoningEffortMapping []llm.ReasoningEffortMapping
+		if c.Settings != nil {
+			reasoningEffortMapping = c.Settings.TransformOptions.ReasoningEffortMapping
+		}
 		transformer, err := zai.NewOutboundTransformerWithConfig(&zai.Config{
-			BaseURL:        c.BaseURL,
-			APIKeyProvider: getAPIKeyProvider(ch),
-			Version:        "v1",
+			BaseURL:                c.BaseURL,
+			APIKeyProvider:         getAPIKeyProvider(ch),
+			Version:                "v1",
+			ReasoningEffortMapping: reasoningEffortMapping,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
