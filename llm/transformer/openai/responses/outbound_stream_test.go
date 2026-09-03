@@ -1436,5 +1436,3 @@ func TestOutboundTransformer_TransformStream_UsageWithoutContentStillIncomplete(
 		}
 	}
 }
-
-
