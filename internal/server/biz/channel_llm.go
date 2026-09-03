@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -284,6 +285,7 @@ func (svc *ChannelService) buildCodexOutbound(
 	ch *Channel,
 	baseURL string,
 	transport string,
+	alphaSearchPath string,
 	httpClient *httpclient.HttpClient,
 ) (transformer.Outbound, error) {
 	if c.Credentials.IsOAuth() {
@@ -291,9 +293,10 @@ func (svc *ChannelService) buildCodexOutbound(
 			if existing, ok := ch.Outbound.(*codex.OutboundTransformer); ok {
 				if tokens := existing.TokenProvider(); tokens != nil {
 					return codex.NewOutboundTransformer(codex.Params{
-						TokenProvider: tokens,
-						BaseURL:       baseURL,
-						Transport:     transport,
+						TokenProvider:   tokens,
+						BaseURL:         baseURL,
+						Transport:       transport,
+						AlphaSearchPath: alphaSearchPath,
 					})
 				}
 			}
@@ -334,9 +337,10 @@ func (svc *ChannelService) buildCodexOutbound(
 		}
 
 		return codex.NewOutboundTransformer(codex.Params{
-			TokenProvider: p,
-			BaseURL:       baseURL,
-			Transport:     transport,
+			TokenProvider:   p,
+			BaseURL:         baseURL,
+			Transport:       transport,
+			AlphaSearchPath: alphaSearchPath,
 		})
 	}
 
@@ -344,9 +348,10 @@ func (svc *ChannelService) buildCodexOutbound(
 	tokens := oauth.NewAPIKeyTokenProvider(apiKeyProvider.Get)
 
 	return codex.NewOutboundTransformer(codex.Params{
-		TokenProvider: tokens,
-		BaseURL:       baseURL,
-		Transport:     transport,
+		TokenProvider:   tokens,
+		BaseURL:         baseURL,
+		Transport:       transport,
+		AlphaSearchPath: alphaSearchPath,
 	})
 }
 
@@ -380,6 +385,19 @@ func (svc *ChannelService) buildNonDefaultEndpointOutbound(
 			})
 		}
 
+		// Empty paths on existing custom endpoints historically used the generic
+		// OpenAI transformer, which appends /v1. There is no persisted flag that
+		// distinguishes those records from newer family endpoints, so only opt into
+		// a family transformer when the base URL explicitly carries its provider
+		// version. An explicit path is unambiguous and always uses the family
+		// transformer. This preserves old /v1 routes while retaining family-specific
+		// request handling for new /v4 and /v3 endpoints.
+		if ep.Path != "" || providerChatEndpointUsesFamilyVersion(c.Type, baseURL) {
+			if outbound, ok, err := newProviderChatOutbound(c.Type, ch, baseURL, ep.Path); ok {
+				return outbound, err
+			}
+		}
+
 		return openai.NewOutboundTransformerWithConfig(&openai.Config{
 			PlatformType:   openai.PlatformOpenAI,
 			BaseURL:        baseURL,
@@ -396,7 +414,7 @@ func (svc *ChannelService) buildNonDefaultEndpointOutbound(
 		llm.APIFormatOpenAIResponseCompact.String():
 		transport := endpointTransport(ep)
 		if (c.Type == channel.TypeCodex || c.Type == channel.TypeFenno) && ep.APIFormat == llm.APIFormatOpenAIResponse.String() {
-			return svc.buildCodexOutbound(c, ch, baseURL, transport, ch.HTTPClient)
+			return svc.buildCodexOutbound(c, ch, baseURL, transport, "", ch.HTTPClient)
 		}
 
 		return responses.NewOutboundTransformerWithConfig(&responses.Config{
@@ -404,6 +422,17 @@ func (svc *ChannelService) buildNonDefaultEndpointOutbound(
 			APIKeyProvider: apiKeyProvider(),
 			EndpointPath:   ep.Path,
 			Transport:      transport,
+		})
+	case llm.APIFormatOpenAIAlphaSearch.String():
+		if c.Type == channel.TypeCodex {
+			return svc.buildCodexOutbound(c, ch, baseURL, endpointTransport(ep), ep.Path, ch.HTTPClient)
+		}
+
+		return openai.NewOutboundTransformerWithConfig(&openai.Config{
+			PlatformType:   openai.PlatformOpenAI,
+			BaseURL:        baseURL,
+			APIKeyProvider: apiKeyProvider(),
+			EndpointPath:   ep.Path,
 		})
 	case llm.APIFormatOpenAIEmbedding.String(),
 		llm.APIFormatOpenAIModeration.String(),
@@ -419,7 +448,7 @@ func (svc *ChannelService) buildNonDefaultEndpointOutbound(
 				ep.APIFormat == llm.APIFormatOpenAIImageEdit.String()) {
 			transport := endpointTransport(ep)
 
-			return svc.buildCodexOutbound(c, ch, baseURL, transport, ch.HTTPClient)
+			return svc.buildCodexOutbound(c, ch, baseURL, transport, "", ch.HTTPClient)
 		}
 
 		return openai.NewOutboundTransformerWithConfig(&openai.Config{
@@ -458,6 +487,73 @@ func (svc *ChannelService) buildNonDefaultEndpointOutbound(
 	default:
 		return nil, fmt.Errorf("unsupported api_format %q", ep.APIFormat)
 	}
+}
+
+func newProviderChatOutbound(
+	channelType channel.Type,
+	ch *Channel,
+	baseURL string,
+	endpointPath string,
+) (transformer.Outbound, bool, error) {
+	apiKeyProvider := getAPIKeyProvider(ch)
+
+	switch channelType {
+	case channel.TypeZai, channel.TypeZhipu, channel.TypeZhipuAnthropic, channel.TypeZaiAnthropic:
+		outbound, err := zai.NewOutboundTransformerWithConfig(&zai.Config{
+			BaseURL:        baseURL,
+			Version:        "v4",
+			EndpointPath:   endpointPath,
+			APIKeyProvider: apiKeyProvider,
+		})
+		return outbound, true, err
+	case channel.TypeXiaomi, channel.TypeXiaomiAnthropic:
+		outbound, err := zai.NewOutboundTransformerWithConfig(&zai.Config{
+			BaseURL:        baseURL,
+			Version:        "v1",
+			EndpointPath:   endpointPath,
+			APIKeyProvider: apiKeyProvider,
+		})
+		return outbound, true, err
+	case channel.TypeDoubao, channel.TypeVolcengine, channel.TypeDoubaoAnthropic, channel.TypeVolcengineAnthropic:
+		outbound, err := doubao.NewOutboundTransformerWithConfig(&doubao.Config{
+			BaseURL:        baseURL,
+			EndpointPath:   endpointPath,
+			APIKeyProvider: apiKeyProvider,
+		})
+		return outbound, true, err
+	default:
+		return nil, false, nil
+	}
+}
+
+func providerChatEndpointUsesFamilyVersion(channelType channel.Type, baseURL string) bool {
+	if channelType == channel.TypeXiaomi || channelType == channel.TypeXiaomiAnthropic {
+		// Xiaomi uses v1, so the family and generic transformers have the same
+		// route convention. Keep its provider-specific request handling.
+		return true
+	}
+
+	version := ""
+	switch channelType {
+	case channel.TypeZai, channel.TypeZhipu, channel.TypeZhipuAnthropic, channel.TypeZaiAnthropic:
+		version = "v4"
+	case channel.TypeDoubao, channel.TypeVolcengine, channel.TypeDoubaoAnthropic, channel.TypeVolcengineAnthropic:
+		version = "v3"
+	default:
+		return false
+	}
+
+	return urlPathContainsSegment(baseURL, version)
+}
+
+func urlPathContainsSegment(rawURL, segment string) bool {
+	rawURL = strings.TrimSuffix(rawURL, "##")
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+
+	return slices.Contains(strings.Split(strings.Trim(parsed.Path, "/"), "/"), segment)
 }
 
 //nolint:maintidx // Checked.
@@ -504,10 +600,7 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 
 	switch c.Type {
 	case channel.TypeDoubao, channel.TypeVolcengine:
-		transformer, err := doubao.NewOutboundTransformerWithConfig(&doubao.Config{
-			BaseURL:        c.BaseURL,
-			APIKeyProvider: getAPIKeyProvider(ch),
-		})
+		transformer, _, err := newProviderChatOutbound(c.Type, ch, c.BaseURL, "")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
 		}
@@ -588,10 +681,7 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 
 		return ch, nil
 	case channel.TypeZai, channel.TypeZhipu:
-		transformer, err := zai.NewOutboundTransformerWithConfig(&zai.Config{
-			BaseURL:        c.BaseURL,
-			APIKeyProvider: getAPIKeyProvider(ch),
-		})
+		transformer, _, err := newProviderChatOutbound(c.Type, ch, c.BaseURL, "")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
 		}
@@ -600,11 +690,7 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 
 		return ch, nil
 	case channel.TypeXiaomi:
-		transformer, err := zai.NewOutboundTransformerWithConfig(&zai.Config{
-			BaseURL:        c.BaseURL,
-			APIKeyProvider: getAPIKeyProvider(ch),
-			Version:        "v1",
-		})
+		transformer, _, err := newProviderChatOutbound(c.Type, ch, c.BaseURL, "")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
 		}
@@ -951,14 +1037,9 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 
 		return ch, nil
 	case channel.TypeOpencodeGo:
-		var reasoningEffortMapping []llm.ReasoningEffortMapping
-		if c.Settings != nil {
-			reasoningEffortMapping = c.Settings.TransformOptions.ReasoningEffortMapping
-		}
 		transformer, err := opencode.NewOutboundTransformerWithConfig(&opencode.Config{
-			BaseURL:                c.BaseURL,
-			APIKeyProvider:         getAPIKeyProvider(ch),
-			ReasoningEffortMapping: reasoningEffortMapping,
+			BaseURL:        c.BaseURL,
+			APIKeyProvider: getAPIKeyProvider(ch),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
@@ -969,7 +1050,7 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 		return ch, nil
 	case channel.TypeCodex, channel.TypeFenno:
 		transport := primaryEndpointTransport(c, llm.APIFormatOpenAIResponse.String())
-		transformer, err := svc.buildCodexOutbound(c, ch, c.BaseURL, transport, httpClient)
+		transformer, err := svc.buildCodexOutbound(c, ch, c.BaseURL, transport, "", httpClient)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create codex outbound transformer: %w", err)
 		}
@@ -1040,15 +1121,10 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 		channel.TypePpio, channel.TypeSiliconflow,
 		channel.TypeVercel, channel.TypeAihubmix, channel.TypeBurncloud, channel.TypeGithub,
 		channel.TypeEvolink, channel.TypeGroq:
-		var reasoningEffortMapping []llm.ReasoningEffortMapping
-		if c.Settings != nil {
-			reasoningEffortMapping = c.Settings.TransformOptions.ReasoningEffortMapping
-		}
 		transformer, err := openai.NewOutboundTransformerWithConfig(&openai.Config{
-			PlatformType:           openai.PlatformOpenAI,
-			BaseURL:                c.BaseURL,
-			APIKeyProvider:         getAPIKeyProvider(ch),
-			ReasoningEffortMapping: reasoningEffortMapping,
+			PlatformType:   openai.PlatformOpenAI,
+			BaseURL:        c.BaseURL,
+			APIKeyProvider: getAPIKeyProvider(ch),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
