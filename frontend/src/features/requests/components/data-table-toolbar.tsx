@@ -65,6 +65,9 @@ interface RequestFilterControlsProps {
   onCloseAfterAction?: () => void;
 }
 
+/**
+ * Renders the request filters available to the current user.
+ */
 function RequestFilterControls({
   table,
   dateRange,
