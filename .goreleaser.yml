@@ -111,6 +111,7 @@ brews:
       owner: looplj
       name: homebrew-axonhub
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    skip_upload: true
     directory: Formula
     homepage: "https://github.com/looplj/axonhub"
     description: "All-in-one AI development platform. Use any SDK, access any model."
