@@ -61,6 +61,7 @@ builds:
 
 release:
   draft: true
+  replace_existing_artifacts: true
   extra_files:
     - glob: ./config.schema.json
 
