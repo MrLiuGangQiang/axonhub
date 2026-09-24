@@ -11,7 +11,12 @@ import (
 
 	"entgo.io/contrib/entgql"
 	"github.com/looplj/axonhub/internal/ent"
+	"github.com/looplj/axonhub/internal/ent/apikey"
+	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/ent/providerquotastatus"
+	"github.com/looplj/axonhub/internal/ent/requestexecution"
+	"github.com/looplj/axonhub/internal/ent/usagelog"
+	"github.com/looplj/axonhub/internal/ent/user"
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/samber/lo"
@@ -44,6 +49,14 @@ func (r *aPIKeyResolver) ProjectID(ctx context.Context, obj *ent.APIKey) (*objec
 // User is the resolver for the user field.
 // Returns nil if the user has been soft-deleted.
 func (r *aPIKeyResolver) User(ctx context.Context, obj *ent.APIKey) (*ent.User, error) {
+	if loaded, err := obj.Edges.UserOrErr(); err == nil {
+		return loaded, nil
+	} else if ent.IsNotFound(err) {
+		return nil, nil
+	} else if !ent.IsNotLoaded(err) {
+		return nil, err
+	}
+
 	return getNilableUser(ctx, r.client, obj.UserID)
 }
 
@@ -493,7 +506,56 @@ func (r *queryResolver) Requests(ctx context.Context, after *entgql.Cursor[int],
 		orderBy.Field = ent.DefaultRequestOrder.Field
 	}
 
-	return r.client.Request.Query().Paginate(ctx, after, first, before, last,
+	query := r.client.Request.Query()
+	// The request list renders these relations for every row. Eager-loading them
+	// turns per-request relation queries into one batched query per edge instead
+	// of an N+1 query pattern on large pages and auto-refreshes.
+	query = query.
+		WithAPIKey(func(apiKeyQuery *ent.APIKeyQuery) {
+			apiKeyQuery.
+				Select(apikey.FieldID, apikey.FieldName, apikey.FieldUserID).
+				WithUser(func(userQuery *ent.UserQuery) {
+					userQuery.Select(user.FieldID, user.FieldFirstName, user.FieldLastName)
+				})
+		}).
+		WithChannel(func(channelQuery *ent.ChannelQuery) {
+			channelQuery.Select(channel.FieldID, channel.FieldName)
+		}).
+		WithNamedExecutions("executions", func(executionQuery *ent.RequestExecutionQuery) {
+			executionQuery.
+				Select(
+					requestexecution.FieldID,
+					requestexecution.FieldCreatedAt,
+					requestexecution.FieldRequestID,
+					requestexecution.FieldChannelID,
+					requestexecution.FieldModelID,
+					requestexecution.FieldUpstreamModelID,
+					requestexecution.FieldFormat,
+					requestexecution.FieldStatus,
+					requestexecution.FieldReasoningEffort,
+					requestexecution.FieldPassThroughApplied,
+				).
+				Order(ent.Desc(requestexecution.FieldCreatedAt)).
+				WithChannel(func(channelQuery *ent.ChannelQuery) {
+					channelQuery.Select(channel.FieldID, channel.FieldName)
+				})
+		}).
+		WithNamedUsageLogs("usageLogs", func(usageLogQuery *ent.UsageLogQuery) {
+			usageLogQuery.
+				Select(
+					usagelog.FieldID,
+					usagelog.FieldRequestID,
+					usagelog.FieldPromptTokens,
+					usagelog.FieldCompletionTokens,
+					usagelog.FieldCompletionReasoningTokens,
+					usagelog.FieldTotalTokens,
+					usagelog.FieldPromptCachedTokens,
+					usagelog.FieldPromptWriteCachedTokens,
+					usagelog.FieldTotalCost,
+				)
+		})
+
+	return query.Paginate(ctx, after, first, before, last,
 		ent.WithRequestOrder(orderBy),
 		ent.WithRequestFilter(where.Filter),
 	)

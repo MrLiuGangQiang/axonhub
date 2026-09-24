@@ -114,6 +114,17 @@ func (w *Worker) getBatchSize() int {
 func (w *Worker) runCleanup(ctx context.Context, manual bool, manualDays map[string]int) {
 	log.Info(ctx, "Starting cleanup process", log.Bool("manual", manual))
 
+	release, acquired, err := w.acquireCleanupLock(ctx)
+	if err != nil {
+		log.Error(ctx, "Failed to acquire cleanup lock", log.Cause(err))
+		return
+	}
+	if !acquired {
+		log.Info(ctx, "Skipping cleanup because another instance already owns the lock")
+		return
+	}
+	defer release(context.WithoutCancel(ctx))
+
 	ctx = ent.NewContext(ctx, w.Ent)
 	ctx = schematype.SkipSoftDelete(ctx)
 

@@ -97,12 +97,14 @@ export default function DashboardPage() {
   const [modelTotalRequests, setModelTotalRequests] = useState(0);
   const [channelTotalRequests, setChannelTotalRequests] = useState(0);
 
-  const [channelTimePeriod, setChannelTimePeriod] = useState<TimePeriod>('allTime');
-  const [channelTokensTimePeriod, setChannelTokensTimePeriod] = useState<TimePeriod>('allTime');
-  const [modelTimePeriod, setModelTimePeriod] = useState<TimePeriod>('allTime');
-  const [modelTokensTimePeriod, setModelTokensTimePeriod] = useState<TimePeriod>('allTime');
-  const [apiKeyTimePeriod, setApiKeyTimePeriod] = useState<TimePeriod>('allTime');
-  const [apiKeyTokensTimePeriod, setApiKeyTokensTimePeriod] = useState<TimePeriod>('allTime');
+  // Avoid full-table analytics scans by default. Users can still explicitly select
+  // all-time data for an individual chart when they need it.
+  const [channelTimePeriod, setChannelTimePeriod] = useState<TimePeriod>('day');
+  const [channelTokensTimePeriod, setChannelTokensTimePeriod] = useState<TimePeriod>('day');
+  const [modelTimePeriod, setModelTimePeriod] = useState<TimePeriod>('day');
+  const [modelTokensTimePeriod, setModelTokensTimePeriod] = useState<TimePeriod>('day');
+  const [apiKeyTimePeriod, setApiKeyTimePeriod] = useState<TimePeriod>('day');
+  const [apiKeyTokensTimePeriod, setApiKeyTokensTimePeriod] = useState<TimePeriod>('day');
   const [userTokensTimePeriod, setUserTokensTimePeriod] = useState<TimePeriod>('day');
 
   const modelPerformanceDescription = useMemo(() => {
