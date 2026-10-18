@@ -25,6 +25,7 @@ import (
 	"github.com/looplj/axonhub/llm/transformer"
 	"github.com/looplj/axonhub/llm/transformer/openai"
 	"github.com/looplj/axonhub/llm/transformer/openai/decisions"
+	"github.com/looplj/axonhub/llm/transformer/typesafe"
 )
 
 const testChannelAPIKeysMaxConcurrency = 8
@@ -126,11 +127,23 @@ func buildChannelTestRequest(model string, useStream bool, systemPrompt string, 
 	return req
 }
 
-func channelTestAPIFormat(channel *biz.Channel) llm.APIFormat {
+func channelTestAPIFormat(channel *biz.Channel, model string) llm.APIFormat {
 	if channel != nil {
-		for _, endpoint := range channel.ResolveEndpoints() {
+		endpoints := channel.ResolveEndpoints()
+		entry, ok := channel.GetModelEntries()[model]
+		if !ok {
+			entry = channel.GetDirectModelEntries()[model]
+		}
+		forced := forcedAPIFormatsForCandidate(channel, []biz.ChannelModelEntry{entry}, model)
+		if filtered := FilterEndpointsByAPIFormats(endpoints, forced); len(filtered) > 0 {
+			endpoints = filtered[:1]
+		}
+		for _, endpoint := range endpoints {
 			if endpoint.APIFormat == llm.APIFormatOpenAIDecisions.String() {
 				return llm.APIFormatOpenAIDecisions
+			}
+			if endpoint.APIFormat == llm.APIFormatTypeSafeSystemOne.String() {
+				return llm.APIFormatTypeSafeSystemOne
 			}
 		}
 	}
@@ -162,6 +175,9 @@ func usesResponsesWebSocket(channel *biz.Channel) bool {
 	}
 
 	for _, endpoint := range channel.ResolveEndpoints() {
+		if endpoint.APIFormat == llm.APIFormatOpenAIResponseWebSocket.String() {
+			return true
+		}
 		if endpoint.APIFormat != llm.APIFormatOpenAIResponse.String() && endpoint.APIFormat != llm.APIFormatOpenAIResponseCompact.String() {
 			continue
 		}
@@ -187,6 +203,65 @@ func usesResponsesWebSocket(channel *biz.Channel) bool {
 	return false
 }
 
+func (processor *TestChannelOrchestrator) buildChannelTestInput(ctx context.Context, model string, useStream bool, systemPrompt, userPrompt string, responsesWebSocket bool, apiFormat llm.APIFormat) (transformer.Inbound, []byte, error) {
+	if apiFormat == llm.APIFormatTypeSafeSystemOne {
+		if useStream {
+			return nil, nil, fmt.Errorf("systemone does not support streaming")
+		}
+		// Protect role-scoped prompts before System One combines them into State.
+		prompts := buildChannelTestRequest(model, false, systemPrompt, userPrompt, false, llm.APIFormatOpenAIChatCompletion)
+		protected, err := processor.promptProtectionRuleService.Protect(ctx, prompts)
+		if err != nil {
+			return nil, nil, err
+		}
+		body, err := json.Marshal(struct {
+			llm.SystemOneRequest
+
+			Model string `json:"model"`
+		}{
+			Model: model,
+			SystemOneRequest: llm.SystemOneRequest{
+				State: lo.FromPtr(protected.Messages[0].Content.Content) + "\n\n" + lo.FromPtr(protected.Messages[1].Content.Content),
+				Questions: map[string]llm.SystemOneQuestion{
+					"connection": {Type: "noul", Instructions: "Does the state contain a test prompt?"},
+				},
+			},
+		})
+		return typesafe.NewSystemOneInboundTransformer(), body, err
+	}
+	request := buildChannelTestRequest(model, useStream, systemPrompt, userPrompt, responsesWebSocket, apiFormat)
+	body, err := json.Marshal(request)
+	return channelTestInbound(apiFormat), body, err
+}
+
+func channelTestResponseMessage(body []byte, apiFormat llm.APIFormat) (*string, error) {
+	if apiFormat == llm.APIFormatTypeSafeSystemOne {
+		response, err := xjson.To[llm.SystemOneResponse](body)
+		if err != nil {
+			return nil, err
+		}
+		if len(response.Answers) == 0 {
+			return nil, fmt.Errorf("no answers in System One response")
+		}
+		if _, ok := response.Answers["connection"]; !ok {
+			return nil, fmt.Errorf("no connection answer in System One response")
+		}
+		answers, err := json.Marshal(response.Answers)
+		if err != nil {
+			return nil, err
+		}
+		return lo.ToPtr(string(answers)), nil
+	}
+	response, err := xjson.To[llm.Response](body)
+	if err != nil {
+		return nil, err
+	}
+	if len(response.Choices) == 0 {
+		return nil, fmt.Errorf("No message in response")
+	}
+	return response.Choices[0].Message.Content.Content, nil
+}
+
 // TestChannelResult represents the result of a channel test.
 type TestChannelResult struct {
 	Latency float64
@@ -206,8 +281,20 @@ func (processor *TestChannelOrchestrator) TestChannel(
 	if err != nil {
 		return nil, err
 	}
-	apiFormat := channelTestAPIFormat(channel)
-	inbound := channelTestInbound(apiFormat)
+	testModel := lo.FromPtr(modelID)
+	if testModel == "" {
+		testModel = channel.DefaultTestModel
+	}
+	systemPrompt, userPrompt, err := processor.systemService.ChannelTestPrompts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	useStream := channel.Policies.Stream == objects.CapabilityPolicyRequire
+	apiFormat := channelTestAPIFormat(channel, testModel)
+	inbound, body, err := processor.buildChannelTestInput(ctx, testModel, useStream, systemPrompt, userPrompt, usesResponsesWebSocket(channel), apiFormat)
+	if err != nil {
+		return nil, err
+	}
 	// Create ChatCompletionOrchestrator for this test request
 	chatProcessor := &ChatCompletionOrchestrator{
 		channelSelector: NewSpecifiedChannelSelector(processor.channelService, channelID),
@@ -229,25 +316,6 @@ func (processor *TestChannelOrchestrator) TestChannel(
 		circuitBreakerLoadBalancer: processor.loadBalancer,
 		channelLimiterManager:      processor.channelLimiterManager,
 		modelCircuitBreaker:        processor.modelCircuitBreaker,
-	}
-
-	testModel := lo.FromPtr(modelID)
-	if testModel == "" {
-		testModel = channel.DefaultTestModel
-	}
-	systemPrompt, userPrompt, err := processor.systemService.ChannelTestPrompts(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if the channel requires streaming
-	useStream := channel != nil && channel.Policies.Stream == objects.CapabilityPolicyRequire
-
-	llmRequest := buildChannelTestRequest(testModel, useStream, systemPrompt, userPrompt, usesResponsesWebSocket(channel), apiFormat)
-
-	body, err := json.Marshal(llmRequest)
-	if err != nil {
-		return nil, err
 	}
 
 	// Measure latency
@@ -294,7 +362,7 @@ func (processor *TestChannelOrchestrator) TestChannel(
 	latency := time.Since(startTime).Seconds()
 
 	// Handle non-streaming response
-	response, err := xjson.To[llm.Response](rawResponse.ChatCompletion.Body)
+	responseMessage, err := channelTestResponseMessage(rawResponse.ChatCompletion.Body, apiFormat)
 	if err != nil {
 		return &TestChannelResult{
 			Latency: latency,
@@ -304,19 +372,10 @@ func (processor *TestChannelOrchestrator) TestChannel(
 		}, nil
 	}
 
-	if len(response.Choices) == 0 {
-		return &TestChannelResult{
-			Latency: latency,
-			Success: false,
-			Message: new(""),
-			Error:   new("No message in response"),
-		}, nil
-	}
-
 	return &TestChannelResult{
 		Latency: latency,
 		Success: true,
-		Message: response.Choices[0].Message.Content.Content,
+		Message: responseMessage,
 		Error:   nil,
 	}, nil
 }
@@ -333,6 +392,12 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 
 	// Accumulate stream chunks
 	var accumulatedContent string
+	expectedChoices := 0
+	if expected, ok := stream.(interface{ ExpectedStreamChoices() int }); ok {
+		expectedChoices = expected.ExpectedStreamChoices()
+	}
+	terminalTracker := NewStreamTerminalTracker(expectedChoices)
+	terminalSeen := false
 
 	for stream.Next() {
 		select {
@@ -349,6 +414,9 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 		event := stream.Current()
 		if event == nil {
 			continue
+		}
+		if !terminalSeen && terminalTracker.Observe(event) {
+			terminalSeen = true
 		}
 
 		// The stream may end with a "[DONE]" message which is not valid JSON.
@@ -397,6 +465,17 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 			Message: lo.ToPtr(""),
 			Error:   lo.ToPtr("No content in stream response"),
 		}, nil
+	}
+	if !terminalSeen {
+		return &TestChannelResult{
+			Latency: latency,
+			Success: false,
+			Message: lo.ToPtr(accumulatedContent),
+			Error:   lo.ToPtr("Stream ended without terminal event"),
+		}, nil
+	}
+	if observer, ok := stream.(streams.DeliveryAcknowledger); ok {
+		observer.AcknowledgeDelivery()
 	}
 
 	return &TestChannelResult{
@@ -454,7 +533,7 @@ func (processor *TestChannelOrchestrator) TestChannelAPIKeys(
 	}
 
 	useStream := ch.Policies.Stream == objects.CapabilityPolicyRequire
-	apiFormat := channelTestAPIFormat(ch)
+	apiFormat := channelTestAPIFormat(ch, testModel)
 	responsesWebSocket := usesResponsesWebSocket(ch)
 	systemPrompt, userPrompt, err := processor.systemService.ChannelTestPrompts(ctx)
 	if err != nil {
@@ -551,7 +630,7 @@ func (processor *TestChannelOrchestrator) TestSingleAPIKey(
 	}
 
 	useStream := ch.Policies.Stream == objects.CapabilityPolicyRequire
-	apiFormat := channelTestAPIFormat(ch)
+	apiFormat := channelTestAPIFormat(ch, testModel)
 	responsesWebSocket := usesResponsesWebSocket(ch)
 	systemPrompt, userPrompt, err := processor.systemService.ChannelTestPrompts(ctx)
 	if err != nil {
@@ -585,7 +664,14 @@ func (processor *TestChannelOrchestrator) testSingleKey(
 ) *TestAPIKeyResult {
 	keyPrefix := maskAPIKey(key)
 
-	inbound := channelTestInbound(apiFormat)
+	inbound, body, err := processor.buildChannelTestInput(ctx, testModel, useStream, systemPrompt, userPrompt, responsesWebSocket, apiFormat)
+	if err != nil {
+		return &TestAPIKeyResult{
+			KeyPrefix: keyPrefix,
+			Success:   false,
+			Error:     lo.ToPtr(err.Error()),
+		}
+	}
 
 	chatProcessor := &ChatCompletionOrchestrator{
 		channelSelector: &SpecifiedChannelSelector{
@@ -611,19 +697,6 @@ func (processor *TestChannelOrchestrator) testSingleKey(
 		circuitBreakerLoadBalancer: processor.loadBalancer,
 		channelLimiterManager:      processor.channelLimiterManager,
 		modelCircuitBreaker:        processor.modelCircuitBreaker,
-	}
-
-	llmRequest := buildChannelTestRequest(testModel, useStream, systemPrompt, userPrompt, responsesWebSocket, apiFormat)
-
-	body, err := json.Marshal(llmRequest)
-	if err != nil {
-		errMsg := err.Error()
-
-		return &TestAPIKeyResult{
-			KeyPrefix: keyPrefix,
-			Success:   false,
-			Error:     &errMsg,
-		}
 	}
 
 	startTime := time.Now()
@@ -678,20 +751,9 @@ func (processor *TestChannelOrchestrator) testSingleKey(
 	latency := time.Since(startTime).Seconds()
 
 	// Handle non-streaming response
-	response, err := xjson.To[llm.Response](rawResponse.ChatCompletion.Body)
+	_, err = channelTestResponseMessage(rawResponse.ChatCompletion.Body, apiFormat)
 	if err != nil {
 		errMsg := err.Error()
-
-		return &TestAPIKeyResult{
-			KeyPrefix: keyPrefix,
-			Success:   false,
-			Latency:   latency,
-			Error:     &errMsg,
-		}
-	}
-
-	if len(response.Choices) == 0 {
-		errMsg := "No message in response"
 
 		return &TestAPIKeyResult{
 			KeyPrefix: keyPrefix,
