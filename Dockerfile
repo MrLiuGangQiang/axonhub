@@ -1,7 +1,7 @@
-FROM --platform=$BUILDPLATFORM node:25-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
 
 WORKDIR /build
-RUN npm install --global pnpm@10.34.5
+RUN corepack enable && corepack prepare pnpm@10 --activate
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
