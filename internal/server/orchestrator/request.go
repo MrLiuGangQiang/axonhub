@@ -109,16 +109,8 @@ func (m *persistRequestMiddleware) injectUsageCost(ctx context.Context, resp *ll
 		return
 	}
 
-	if state.SystemService != nil {
-		enabled, err := state.SystemService.InjectUsageCostEnabled(ctx)
-		if err != nil {
-			log.Warn(ctx, "failed to get inject usage cost setting", log.Cause(err))
-			return
-		}
-
-		if !enabled {
-			return
-		}
+	if !state.settings().InjectUsageCost {
+		return
 	}
 
 	state.UsageLogService.InjectUsageCost(ctx, state.RequestExec.ChannelID, state.RequestExec.ModelID, resp.Usage)
@@ -218,6 +210,7 @@ func (m *persistRequestMiddleware) OnInboundRawResponse(ctx context.Context, htt
 			log.Warn(persistCtx, "Failed to update speech request status to completed", log.Cause(err))
 		}
 
+		publishRequestCompleted(persistCtx, state, llmResp.Usage, false, metrics)
 		return httpResp, nil
 	}
 
@@ -229,6 +222,7 @@ func (m *persistRequestMiddleware) OnInboundRawResponse(ctx context.Context, htt
 		log.Warn(persistCtx, "Failed to update request status to completed", log.Cause(err))
 	}
 
+	publishRequestCompleted(persistCtx, state, llmResp.Usage, false, metrics)
 	return httpResp, nil
 }
 

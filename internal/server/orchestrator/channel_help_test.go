@@ -49,16 +49,18 @@ func newTestLoadBalancedSelector(
 	requestService *biz.RequestService,
 ) CandidateSelector {
 	strategies := []LoadBalanceStrategy{
-		NewErrorAwareStrategy(channelService),
-		NewWeightRoundRobinStrategy(channelService),
-		NewLatencyAwareStrategy(channelService),
+		NewErrorAwareStrategy(),
+		NewWeightRoundRobinStrategy(),
+		NewLatencyAwareStrategy(),
 	}
-	loadBalancer := NewLoadBalancer(systemService, nil, strategies...)
+	loadBalancer := NewLoadBalancer(channelService, nil, strategies...)
 
 	modelService := newTestModelService(client)
 	baseSelector := NewDefaultSelector(channelService, modelService, systemService)
 
-	return WithTraceStickyLoadBalancedSelector(baseSelector, loadBalancer, systemService, requestService)
+	ctx := ent.NewContext(authz.WithTestBypass(context.Background()), client)
+
+	return WithTraceStickyLoadBalancedSelector(baseSelector, loadBalancer, systemService.RetryPolicyOrDefault(ctx), requestService)
 }
 
 // newTestSystemService creates a minimal system service for testing.
